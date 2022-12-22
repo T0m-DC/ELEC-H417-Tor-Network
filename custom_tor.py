@@ -1,15 +1,18 @@
+import hashlib
 import random
 import os
 from socket import socket, AF_INET, SOCK_STREAM
 from cryptography.fernet import Fernet
 from termcolor import colored
+import webbrowser
 
 os.system('color')
 
 class TorNetwork:
-    def __init__(self):
+    def __init__(self, port=None):
         try:
-            port = int(input('Enter port where the Network will listen : '))
+            if port is None:
+                port = int(input('Enter port where the Network will listen : '))
             self.port = port
             self.serverSocket = socket(AF_INET, SOCK_STREAM)
             self.serverSocket.bind(('', port))
@@ -23,7 +26,7 @@ class TorNetwork:
 
     def listen(self):
         while True:
-            print(colored(f"Tor network : waiting...", attrs=['bold', 'underline']))
+            print(colored(f"\nTor network : waiting...", attrs=['bold', 'underline']))
             connectionSocket, addr = self.serverSocket.accept()
             message = connectionSocket.recv(1024).decode()
             print(colored(f"Request received from {addr} : {message}", attrs=['bold']))
@@ -79,8 +82,9 @@ class TorNetwork:
 
 
 class Client:
-    def __init__(self):
-        name = str(input('Enter the name of the Client : '))
+    def __init__(self, name=None):
+        if name is None:
+            name = str(input('Enter the name of the Client : '))
         self.name = name
         self.keys = []
         self.ports = []
@@ -88,7 +92,7 @@ class Client:
     def connectToTorNetwork(self):
         clientSocket = socket(AF_INET, SOCK_STREAM)
         try:
-            portDestination = int(input(f"{self.name} : Tor network port : "))
+            portDestination = int(input(f"\n{self.name} : enter tor network port : "))
             message = 'GET relays'
             try:
                 clientSocket.connect(('localhost', portDestination))
@@ -99,7 +103,7 @@ class Client:
 
                 responseMessage = clientSocket.recv(1024).decode()
                 if responseMessage == 'Not enough relays !':
-                    print(colored(f"{self.name} : response : {responseMessage}", 'red'))
+                    print(f"{self.name} : " + colored(f"response : {responseMessage}", 'red'))
                     clientSocket.close()
                     return False
 
@@ -120,11 +124,11 @@ class Client:
                 return True
 
             except ConnectionRefusedError:
-                print(colored(f"Connection refused ! (probably wrong port)", 'red'))
+                print(f"{self.name} : " + colored(f"Connection refused ! (probably wrong port)", 'red'))
                 return False
 
         except ValueError as e:
-            print(colored(f"{e}", 'red'))
+            print(f"{self.name} : " + colored(f"{e}", 'red'))
             clientSocket.close()
             self.connectToTorNetwork()
 
@@ -132,9 +136,8 @@ class Client:
         if self.connectToTorNetwork():
             try:
                 encryptors = [Fernet(k) for k in self.keys]
-                print()
-                portDestination = int(input(f"{self.name} : Port destination : "))
-                message = input(colored(f"{self.name} : Message : ", attrs=['bold']))
+                portDestination = int(input(f"\n{self.name} : enter destination port : "))
+                message = "GET HTTP"#input(colored(f"{self.name} : Message : ", attrs=['bold']))
                 message = str(portDestination) + " " + message
 
                 messageEncrypted = message.encode()
@@ -153,21 +156,53 @@ class Client:
                 for decryptor in reversed(encryptors):
                     responseDecrypted = decryptor.decrypt(responseDecrypted)
 
-                if responseDecrypted.decode() == 'Not a valid port':
-                    print(colored(f"{self.name} : response : {responseDecrypted.decode()}", 'red'))
+                if responseDecrypted.decode() == 'NOT A VALID PORT':
+                    print(f"{self.name} : " + colored(f"response : {responseDecrypted.decode()}", 'red'))
+                elif responseDecrypted.decode() == 'WRONG REQUEST !':
+                    print(f"{self.name} : " + colored(f"response : {responseDecrypted.decode()}", 'red'))
+                elif "AUTHENTICATION NEEDED" in responseDecrypted.decode():
+                    print(f"{self.name} : " + colored("AUTHENTICATION NEEDED", attrs=['bold']))
+                    challenge = int(responseDecrypted.decode().split(" ")[2].strip())
+                    password = str(input(f"{self.name} : Enter password : "))
+                    hashedPassword = hashlib.sha256((password+str(challenge)).encode()).hexdigest()
+                    message = str(portDestination) + " " + hashedPassword
+                    messageEncrypted = message.encode()
+                    for i in range(len(self.ports)):
+                        messageEncrypted = encryptors[i].encrypt(messageEncrypted)
+                        if i != len(self.ports) - 1:
+                            messageEncrypted = str(self.ports[i]).encode() + ' '.encode() + messageEncrypted
+
+                    clientSocket.close()
+                    clientSocket = socket(AF_INET, SOCK_STREAM)
+                    clientSocket.connect(('localhost', self.ports[len(self.ports) - 1]))
+                    clientSocket.send(messageEncrypted)
+                    responseMessage = clientSocket.recv(1024)
+                    responseDecrypted = responseMessage
+                    for decryptor in reversed(encryptors):
+                        responseDecrypted = decryptor.decrypt(responseDecrypted)
+                    if responseDecrypted.decode() == "WRONG PASSWORD":
+                        print(f"{self.name} : " + colored("Wrong password !", 'red'))
+
+                    else:
+                        print(colored(f"{self.name} : response : {responseDecrypted.decode()}", attrs=['bold']))
+                        with open("response.html", "w") as f:
+                            f.write(responseDecrypted.decode())
+                        webbrowser.open_new_tab('response.html')
+
                 else:
-                    print(colored(f"{self.name} : response : {responseDecrypted.decode()}", attrs=['bold']))
-                print()
+                    print(f"{self.name} : " + colored(f"Something went wrong", 'red'))
+
                 clientSocket.close()
+
             except ValueError as e:
-                print(colored(f"{e}", 'red'))
+                print(f"{self.name} : " + colored(f"{e}", 'red'))
                 self.sendViaTor()
 
 
 class TorRelay:
-    def __init__(self):
-        self.name = None
-        self.port = None
+    def __init__(self, name=None, port=None):
+        self.name = name
+        self.port = port
         self.key = Fernet.generate_key()
         self.encryptor = Fernet(self.key)
         self.socketListening = socket(AF_INET, SOCK_STREAM)
@@ -177,11 +212,11 @@ class TorRelay:
         self.socketListening.bind(('', self.port))
         self.socketListening.listen(1)
         while True:
-            print(colored(f"{self.name} : listening on port {self.port}...", attrs=['bold', 'underline']))
+            print(colored(f"\n{self.name} : listening on port {self.port}...", attrs=['bold', 'underline']))
             connectionSocket, addr = self.socketListening.accept()
             receivedMessage = connectionSocket.recv(1024)
 
-            print(colored(f"{self.name} : received message from {addr} : {receivedMessage.decode()}", attrs=['bold']))
+            print(f"{self.name} : " + colored(f"received message from {addr} : {receivedMessage.decode()}", attrs=['bold']))
             messageDecrypted = self.encryptor.decrypt(receivedMessage).decode()
 
             nextPort = messageDecrypted.split(' ')[0].strip()
@@ -195,37 +230,37 @@ class TorRelay:
                 socketSending.send(messageToSend.encode())
 
                 responseMessage = socketSending.recv(1024)
-                print(colored(f'{self.name} : response : {responseMessage.decode()}', attrs=['bold']))
+                print(f"{self.name} : " + colored(f'response : {responseMessage.decode()}', attrs=['bold']))
 
                 responseMessageEncrypted = self.encryptor.encrypt(responseMessage)
                 print(f'{self.name} : response encrypted : {responseMessageEncrypted.decode()}')
 
                 connectionSocket.send(responseMessageEncrypted)
-                print(colored(f"{self.name} : message sent on {connectionSocket.getpeername()}", attrs=['bold']))
-                print()
+                print(f"{self.name} : " + colored(f"message sent on {connectionSocket.getpeername()}", attrs=['bold']))
 
             except ValueError as e:
-                print(colored(f"{e}", 'red'))
-                print(colored('Not a valid port', 'red'))
-                print(colored(f"{self.name} : message sent on {connectionSocket.getpeername()}", attrs=['bold']))
-                print()
-                connectionSocket.send(self.encryptor.encrypt('Not a valid port'.encode()))
+                print(f"{self.name} : " + colored(f"{e}", 'red'))
+                print(f"{self.name} : " + colored('NOT A VALID PORT', 'red'))
+                print(f"{self.name} : " + colored(f"message sent on {connectionSocket.getpeername()}", attrs=['bold']))
+                connectionSocket.send(self.encryptor.encrypt('NOT A VALID PORT'.encode()))
 
             except ConnectionRefusedError as e:
-                print(colored(f"{e}", 'red'))
-                print(colored('Not a valid port', 'red'))
-                print(colored(f"{self.name} : message sent on {connectionSocket.getpeername()}", attrs=['bold']))
-                print()
-                connectionSocket.send(self.encryptor.encrypt('Not a valid port'.encode()))
+                print(f"{self.name} : " + colored(f"{e}", 'red'))
+                print(f"{self.name} : " + colored('NOT A VALID PORT', 'red'))
+                print(f"{self.name} : " + colored(f"message sent on {connectionSocket.getpeername()}", attrs=['bold']))
+                connectionSocket.send(self.encryptor.encrypt('NOT A VALID PORT'.encode()))
 
             socketSending.close()
             connectionSocket.close()
 
     def joinTorPool(self):
-        self.name = str(input('Enter the name of the Relay : '))
+
         try:
-            self.port = int(input('Enter the port of the Relay : '))
-            portDestination = int(input(f"{self.name} : network port : "))
+            if self.name is None:
+                self.name = str(input('Enter the name of the Relay : '))
+            if self.port is None:
+                self.port = int(input('Enter the port of the Relay : '))
+            portDestination = int(input(f"{self.name} : tor network port to join : "))
 
             message = 'JOIN pool' + ' ' + str(self.port) + ' ' + str(self.key)
             try:
@@ -236,39 +271,65 @@ class TorRelay:
                 responseMessage = socketSending.recv(1024).decode()
                 socketSending.close()
                 if responseMessage != 'SUCCESSFUL':
-                    print(colored('ERROR !!!', 'red'))
-                    print(colored(responseMessage, 'red'))
+                    print(f"{self.name} : " + colored('ERROR !!!', 'red'))
+                    print(f"{self.name} : " + colored(responseMessage, 'red'))
                     self.joinTorPool()
                 else:
-                    print(colored('SUCCESSFUL', 'green'))
+                    print(f"{self.name} : " + colored('SUCCESSFUL', 'green'))
                     self.inPool = True
 
             except ConnectionRefusedError:
-                print(colored("Connection refused ! (probably wrong port)", "red"))
+                print(f"{self.name} : " + colored("Connection refused ! (probably wrong port)", "red"))
                 self.joinTorPool()
 
         except ValueError as e:
-            print(colored(f"{e}", 'red'))
+            print(f"{self.name} : " + colored(f"{e}", 'red'))
             self.joinTorPool()
 
 
 class Server:
-    def __init__(self):
+    def __init__(self, port=None, password=None):
+        if password is None:
+            password = "unicorn"
+        password = str(password)
         try:
-            port = int(input('Enter the port of the Server : '))
+            if port is None:
+                port = input('Enter the port of the Server : ')
 
+            port = int(port)
             serverSocket = socket(AF_INET, SOCK_STREAM)
             serverSocket.bind(('', port))
             serverSocket.listen(1)
 
             while True:
-                print(colored("Server : waiting...", attrs=['bold', 'underline']))
+                print(colored("\nServer : waiting...", attrs=['bold', 'underline']))
                 connectionSocket, addr = serverSocket.accept()
                 message = connectionSocket.recv(1024)
-                print(f"Server : received message : {message.decode()}")
+                print(f"Server : received message : {message.decode()} from {addr}")
+                if message.decode() ==  "GET HTTP":
+                    print(colored("Authentication needed !", attrs=['bold']))
+                    challenge = str(random.randint(1, 100000))
+                    
+                    connectionSocket.send(("AUTHENTICATION NEEDED "+challenge).encode())
+                    rightResponse = hashlib.sha256((password+challenge).encode()).hexdigest()
 
-                connectionSocket.send(message)
-                print(f"Server : message sent : {message.decode()}")
+                    connectionSocket, addr = serverSocket.accept()
+                    response = connectionSocket.recv(1024).decode()
+
+                    print(f"Expected response : {rightResponse}")
+                    print(f"Recived response : {response}")
+
+                    if response == rightResponse:
+                        print(colored("Successful authentication !", 'green'))
+                        connectionSocket.send(b"<html><body>Hello World</body></html>")
+                        print(f"Server : message sent : {b'<html><body>Hello World</body></html>'.decode()}")
+                    else:
+                        print(colored("Wrong password !", 'red'))
+                        connectionSocket.send("WRONG PASSWORD".encode())
+                        print(f"Server : message sent : WRONG PASSWORD")
+                else:
+                    connectionSocket.send("WRONG REQUEST !".encode())
+                    print(f"Server : message sent : {colored('WRONG REQUEST !', 'red')}")
 
                 connectionSocket.close()
 

@@ -8,6 +8,8 @@ import webbrowser
 
 os.system('color')
 
+
+# Acts like a database for the relays to connect to and for the client to get the list of relays
 class TorNetwork:
     def __init__(self, port=None):
         try:
@@ -27,12 +29,16 @@ class TorNetwork:
     def listen(self):
         while True:
             print(colored(f"\nTor network : waiting...", attrs=['bold', 'underline']))
+
+            # Accept connection through its socket
             connectionSocket, addr = self.serverSocket.accept()
+            # Receive a packet
             message = connectionSocket.recv(1024).decode()
             print(colored(f"Request received from {addr} : {message}", attrs=['bold']))
+
+            # If the client wants to get relays select 3 random and send their ports and keys back
             if message == 'GET relays':
-                n = 3  # random.randint(3, self.nRelays)
-                if n > self.nRelays:
+                if self.nRelays < 3:
                     print(colored(f"Not enough relays !", "red"))
                     connectionSocket.send('Not enough relays !'.encode())
                     connectionSocket.close()
@@ -41,7 +47,7 @@ class TorNetwork:
                     indChosen = []
                     nbChosen = 0
                     returnMessage = []
-                    while nbChosen != n:
+                    while nbChosen != 3:
                         ind = random.randint(0, self.nRelays - 1)
                         if ind not in indChosen:
                             nbChosen += 1
@@ -53,10 +59,13 @@ class TorNetwork:
                     connectionSocket.send(returnMessage)
                     connectionSocket.close()
 
+            # If a relay wants to join the network it will register its port and key
             elif 'JOIN pool' in message:
                 messageParsed = message.split(' ')
                 port = messageParsed[2]
                 key = messageParsed[3]
+                # Check if a relay with the same port is not already registered, it prevents to try to instantiate 2
+                # relays with the same port
                 if port not in self.relayPorts:
                     self.relayPorts.append(port)
                     self.relayKeys.append(key)
@@ -72,6 +81,7 @@ class TorNetwork:
                     connectionSocket.send('Port already used !'.encode())
                     connectionSocket.close()
 
+            # If request not in the protocol
             else:
                 print(colored(f"Invalid request", 'red'))
                 connectionSocket.send('Invalid request'.encode())
@@ -92,6 +102,7 @@ class Client:
     def connectToTorNetwork(self):
         clientSocket = socket(AF_INET, SOCK_STREAM)
         try:
+            # Connect to the Tor Network
             portDestination = int(input(f"\n{self.name} : enter tor network port : "))
             message = 'GET relays'
             try:
@@ -109,6 +120,7 @@ class Client:
 
                 responseMessage = responseMessage[1:len(responseMessage) - 2].split(',')
 
+                # Retrieve the ports and keys
                 t = 0
                 for elem in responseMessage:
                     elem = elem.replace("(", "").replace(')', '').replace('"', '').replace("'", '').strip()
@@ -137,9 +149,11 @@ class Client:
             try:
                 encryptors = [Fernet(k) for k in self.keys]
                 portDestination = int(input(f"\n{self.name} : enter destination port : "))
-                message = "GET HTTP"#input(colored(f"{self.name} : Message : ", attrs=['bold']))
+                message = "GET HTTP"  # input(colored(f"{self.name} : Message : ", attrs=['bold']))
                 message = str(portDestination) + " " + message
 
+                # Encrypts the packet and then append the port destination in front (except for the first packet
+                # because the client will send it itself
                 messageEncrypted = message.encode()
                 for i in range(len(self.ports)):
                     messageEncrypted = encryptors[i].encrypt(messageEncrypted)
@@ -147,24 +161,35 @@ class Client:
                         messageEncrypted = str(self.ports[i]).encode() + ' '.encode() + messageEncrypted
 
                 clientSocket = socket(AF_INET, SOCK_STREAM)
-                clientSocket.connect(('localhost', self.ports[len(self.ports)-1]))
+                clientSocket.connect(('localhost', self.ports[len(self.ports) - 1]))
                 clientSocket.send(messageEncrypted)
 
                 responseMessage = clientSocket.recv(1024)
                 responseDecrypted = responseMessage
 
+                # The returned packet is now just the response with 3 layers of encryption
                 for decryptor in reversed(encryptors):
                     responseDecrypted = decryptor.decrypt(responseDecrypted)
 
+                # If the client tried to connect to a non-existing server
                 if responseDecrypted.decode() == 'NOT A VALID PORT':
                     print(f"{self.name} : " + colored(f"response : {responseDecrypted.decode()}", 'red'))
+
+                # If the server has received a wring request
                 elif responseDecrypted.decode() == 'WRONG REQUEST !':
                     print(f"{self.name} : " + colored(f"response : {responseDecrypted.decode()}", 'red'))
+
+                # If the server needs authentication for the request
                 elif "AUTHENTICATION NEEDED" in responseDecrypted.decode():
                     print(f"{self.name} : " + colored("AUTHENTICATION NEEDED", attrs=['bold']))
+
+                    # Receive the challenge from the server
                     challenge = int(responseDecrypted.decode().split(" ")[2].strip())
                     password = str(input(f"{self.name} : Enter password : "))
-                    hashedPassword = hashlib.sha256((password+str(challenge)).encode()).hexdigest()
+                    # Hashes the password and the challenge
+                    hashedPassword = hashlib.sha256((password + str(challenge)).encode()).hexdigest()
+
+                    # Create the packet as usual
                     message = str(portDestination) + " " + hashedPassword
                     messageEncrypted = message.encode()
                     for i in range(len(self.ports)):
@@ -173,16 +198,22 @@ class Client:
                             messageEncrypted = str(self.ports[i]).encode() + ' '.encode() + messageEncrypted
 
                     clientSocket.close()
+
+                    # Create a new socket to send the hashed challenge
                     clientSocket = socket(AF_INET, SOCK_STREAM)
                     clientSocket.connect(('localhost', self.ports[len(self.ports) - 1]))
                     clientSocket.send(messageEncrypted)
+
+                    # Receive the response from the server
                     responseMessage = clientSocket.recv(1024)
                     responseDecrypted = responseMessage
                     for decryptor in reversed(encryptors):
                         responseDecrypted = decryptor.decrypt(responseDecrypted)
+
                     if responseDecrypted.decode() == "WRONG PASSWORD":
                         print(f"{self.name} : " + colored("Wrong password !", 'red'))
 
+                    # If the authentication is successful, the client will open the html response in a new tab
                     else:
                         print(colored(f"{self.name} : response : {responseDecrypted.decode()}", attrs=['bold']))
                         with open("response.html", "w") as f:
@@ -213,10 +244,13 @@ class TorRelay:
         self.socketListening.listen(1)
         while True:
             print(colored(f"\n{self.name} : listening on port {self.port}...", attrs=['bold', 'underline']))
+            # Accept connection
             connectionSocket, addr = self.socketListening.accept()
             receivedMessage = connectionSocket.recv(1024)
 
-            print(f"{self.name} : " + colored(f"received message from {addr} : {receivedMessage.decode()}", attrs=['bold']))
+            print(f"{self.name} : " + colored(f"received message from {addr} : {receivedMessage.decode()}",
+                                              attrs=['bold']))
+            # Decrypt the message to get the next port and next packet/message
             messageDecrypted = self.encryptor.decrypt(receivedMessage).decode()
 
             nextPort = messageDecrypted.split(' ')[0].strip()
@@ -229,6 +263,8 @@ class TorRelay:
                 socketSending.connect(('localhost', int(nextPort)))
                 socketSending.send(messageToSend.encode())
 
+                # After sending the packet, waits for the response to send it backwards and to the client (re-encrypts the
+                # packet)
                 responseMessage = socketSending.recv(1024)
                 print(f"{self.name} : " + colored(f'response : {responseMessage.decode()}', attrs=['bold']))
 
@@ -303,22 +339,29 @@ class Server:
 
             while True:
                 print(colored("\nServer : waiting...", attrs=['bold', 'underline']))
+
                 connectionSocket, addr = serverSocket.accept()
                 message = connectionSocket.recv(1024)
+
                 print(f"Server : received message : {message.decode()} from {addr}")
-                if message.decode() ==  "GET HTTP":
+
+                # Only accepts http requests
+                if message.decode() == "GET HTTP":
                     print(colored("Authentication needed !", attrs=['bold']))
+
+                    # Create a challenge to send back to the client
                     challenge = str(random.randint(1, 100000))
-                    
-                    connectionSocket.send(("AUTHENTICATION NEEDED "+challenge).encode())
-                    rightResponse = hashlib.sha256((password+challenge).encode()).hexdigest()
+
+                    connectionSocket.send(("AUTHENTICATION NEEDED " + challenge).encode())
+                    rightResponse = hashlib.sha256((password + challenge).encode()).hexdigest()
 
                     connectionSocket, addr = serverSocket.accept()
                     response = connectionSocket.recv(1024).decode()
 
                     print(f"Expected response : {rightResponse}")
-                    print(f"Recived response : {response}")
+                    print(f"Received response : {response}")
 
+                    # If the response to the challenge is the one expected grants access to the clients
                     if response == rightResponse:
                         print(colored("Successful authentication !", 'green'))
                         connectionSocket.send(b"<html><body>Hello World</body></html>")
